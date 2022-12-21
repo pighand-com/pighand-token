@@ -8,7 +8,7 @@
 定时更新 access_token。从本地缓存、数据库中读取过期的 token 更新（可关闭）
 access_token 可保存至 本地缓存、redis、mysql、mongo，根据场景自动选择最优查询方案。也可不保存，直接通过接口实时获取。
 
-<img src="https://github.com/pighand-com/pighand-token/blob/master/public/flowChat.png">
+<img src="https://github.com/pighand-com/pighand-token/blob/main/public/flowChat.png?raw=true">
 
 ### 运行
 
