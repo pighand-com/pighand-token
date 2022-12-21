@@ -3,9 +3,9 @@
 统一管理三方 access_token。
 解决不同环境，单独处理 access_token，致使 access_token 过期问题。
 
-支持微信、支付宝（开发中）、飞书（开发中）。
-通过接口查询、刷新 access_token。
-定时更新 access_token。从本地缓存、数据库中读取过期的 token 更新（可关闭）
+支持微信、支付宝（开发中）、飞书（开发中）。\
+通过接口查询、刷新 access_token。\
+定时更新 access_token。从本地缓存、数据库中读取过期的 token 更新（可关闭）\
 access_token 可保存至 本地缓存、redis、mysql、mongo，根据场景自动选择最优查询方案。也可不保存，直接通过接口实时获取。
 
 <img src="https://github.com/pighand-com/pighand-token/blob/main/public/flowChat.png?raw=true">
