@@ -42,4 +42,3 @@ class Mongo extends DBAbstract<Mongoose> {
 const mongo = new Mongo();
 
 export default mongo;
-export const client = mongo.client;

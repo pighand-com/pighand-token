@@ -44,4 +44,3 @@ class Redis extends DBAbstract<RedisClientType> {
 const redis = new Redis();
 
 export default redis;
-export const client = redis.client;

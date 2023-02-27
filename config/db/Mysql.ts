@@ -54,4 +54,3 @@ class Mysql extends DBAbstract<Sequelize> {
 const mysql = new Mysql();
 
 export default mysql;
-export const client = mysql.client;
