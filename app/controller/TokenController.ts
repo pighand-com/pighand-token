@@ -2,8 +2,7 @@ import { Context } from 'koa';
 import {
     BaseController,
     Controller,
-    Get,
-    Put,
+    Post,
 } from '@pighand/pighand-framework-koa';
 
 import PlatformService from '../service/Service';
@@ -11,42 +10,34 @@ import PlatformService from '../service/Service';
 /**
  * controller
  */
-@Controller('/token')
-class UserController extends BaseController(PlatformService) {
+@Controller()
+class TokenController extends BaseController(PlatformService) {
     /**
      * 获取token
      */
-    @Get('/:projectId/:platform/:appid')
+    @Post(':platform/:projectId')
     async getAccessToken(ctx: Context) {
-        const { projectId, platform, appid } = ctx.params;
-        const { secret } = super.getParams(ctx);
+        const { projectId, platform } = ctx.params;
+        const params = super.getParams(ctx);
 
-        const accessToken = await PlatformService.getAccessToken(
+        const result = await PlatformService.getAccessToken(
             projectId,
             platform,
-            appid,
-            secret,
+            params,
         );
-        return super.result(ctx, accessToken);
+        return super.result(ctx, result);
     }
 
     /**
-     * 刷新token
+     * 初始化
      */
-    @Put('/:projectId/:platform/:appid')
-    async refreshAccessToken(ctx: Context) {
-        const { projectId, platform, appid } = ctx.params;
-        const { secret, nowToken } = super.getParams(ctx);
+    @Post('init')
+    async init(ctx: Context) {
+        const params = super.getParams(ctx);
 
-        const accessToken = await PlatformService.refreshAccessToken(
-            projectId,
-            platform,
-            appid,
-            secret,
-            nowToken,
-        );
-        return super.result(ctx, accessToken);
+        await PlatformService.init(params);
+        return super.result(ctx);
     }
 }
 
-export default UserController;
+export default TokenController;

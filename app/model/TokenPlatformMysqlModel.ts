@@ -1,7 +1,7 @@
 import { Table, Column, Model, DataType } from 'sequelize-typescript';
 
 @Table({
-    tableName: 'token',
+    tableName: 'token_platform',
 })
 class TokenMysqlModel extends Model {
     @Column({
@@ -14,22 +14,22 @@ class TokenMysqlModel extends Model {
     declare platform: string;
 
     @Column(DataType.STRING)
-    declare type: string;
-
-    @Column(DataType.STRING)
     declare appid: string;
 
     @Column(DataType.STRING)
     declare secret: string;
 
-    @Column(DataType.STRING)
-    declare token: string;
+    @Column({
+        field: 'access_token',
+        type: DataType.STRING,
+    })
+    declare accessToken: string;
 
     @Column({
-        field: 'expire_time',
+        field: 'expires_time',
         type: DataType.BIGINT,
     })
-    declare expireTime: number;
+    declare expiresTime: number;
 }
 
 export default TokenMysqlModel;

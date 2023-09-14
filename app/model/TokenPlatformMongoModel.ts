@@ -3,27 +3,25 @@ import { Document, Schema, model } from 'mongoose';
 interface IToken extends Document {
     projectId: string;
     platform: string;
-    type: string;
     appid: string;
     secret: string;
-    token: string;
-    expireTime: number;
+    accessToken: string;
+    expiresTime: number;
 }
 
 let schema = new Schema(
     {
         projectId: String,
         platform: String,
-        type: String,
         appid: String,
         secret: String,
-        token: String,
-        expireTime: Number,
+        accessToken: String,
+        expiresTime: Number,
     },
     { strict: true, versionKey: false },
 );
 
 schema.index({ projectId: 1, platform: 1, appid: 1 });
-schema.index({ expireTime: 1 });
+schema.index({ expiresTime: 1 });
 
-export default model<IToken>('token', schema, 'token');
+export default model<IToken>('token_platform', schema, 'token_platform');

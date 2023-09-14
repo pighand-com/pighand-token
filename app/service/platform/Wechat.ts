@@ -1,14 +1,12 @@
 import axios from 'axios';
 import { AxiosResponse } from 'axios';
 
-import PlatformEnum from '../base/PlatformEnum';
-import constant from '../../common/constant';
+import PlatformConfig from '../../common/PlatformConfig';
 import PlatformAbstract from '../base/PlatformAbstract';
 
-/**
- * 微信接口返回值
- */
-interface wechatResultInterface {
+const config = PlatformConfig.wechat;
+
+interface ResultInterface {
     // 微信token
     access_token: string;
 
@@ -29,31 +27,30 @@ interface wechatResultInterface {
 }
 
 /**
- * 微信
+ * 微信接口返回值
  */
 class Wechat extends PlatformAbstract {
     constructor() {
-        super(PlatformEnum.WECHAT, 4 * 60);
+        super(config.type, 4 * 60);
     }
 
     async getAccessToken(appid: string, secret: string) {
-        const url = constant.WECHAT_URL.replace('${appid}', appid).replace(
-            '${secret}',
-            secret,
-        );
+        const url = config.url
+            .replace('${appid}', appid)
+            .replace('${secret}', secret);
         return await axios.get(url);
     }
 
-    disposeResult(result: AxiosResponse) {
-        const data: wechatResultInterface = result.data;
+    disposeResult(result: AxiosResponse<ResultInterface>) {
+        const { status, data } = result;
 
-        if (result.status !== 200) {
-            throw new Error(`获取微信access_token错误: ${data}`);
+        if (status !== 200) {
+            throw new Error(`${config.tip}: ${data}`);
         }
 
         const { access_token, expires_in, errcode, errmsg } = data;
         if (errcode && errcode !== 0) {
-            throw new Error(`获取微信access_token错误(${errcode}): ${errmsg}`);
+            throw new Error(`${config.tip}(${errcode}): ${errmsg}`);
         }
 
         return {

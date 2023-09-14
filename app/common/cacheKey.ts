@@ -4,7 +4,7 @@
 export default (
     projectId: number | string,
     platform: string,
-    appid: string,
+    id: number | string,
 ) => {
-    return `${projectId}_${platform}_${appid}`;
+    return `${projectId}_${platform}_${id || ''}`;
 };

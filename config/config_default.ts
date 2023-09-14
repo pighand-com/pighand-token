@@ -8,9 +8,12 @@ const config_default: ConfigInterface = {
 
     is_enable_schedule: true,
 
-    premature_failure: 60 * 5,
+    token_premature_failure: 60 * 5,
 
-    corn_interval: 60,
+    // 每天0点刷新过期token
+    refresh_token_schedule: { hour: 0 },
+
+    refresh_token_premature_failure: 60 * 60 * 24,
 
     save_model: ['auto'],
 

@@ -1,74 +1,24 @@
 import { AxiosResponse } from 'axios';
+import BaseAbstract, {
+    BaseParams,
+    BaseGetTokenResult,
+    NewTokenResultByIn,
+    NewTokenResultByTime,
+    saveTarget,
+} from './BaseAbstract';
 
-import cacheKey from './cacheKey';
-import config from '../../../config/config';
-import PlatformEnum from './PlatformEnum';
-import MemoryCache from '../../../config/db/MemoryCache';
-import Redis from '../../../config/db/Redis';
+import cacheKey from '../../common/cacheKey';
 import Mysql from '../../../config/db/Mysql';
 import Mongo from '../../../config/db/Mongo';
-import TokenMysqlModel from '../../model/TokenMysqlModel';
-import TokenMongoModel from '../../model/TokenMongoModel';
+import MemoryCache from '../../../config/db/MemoryCache';
+import TokenPlatformMysqlModel from '../../model/TokenPlatformMysqlModel';
+import TokenPlatformMongoModel from '../../model/TokenPlatformMongoModel';
+import { isTokenExpired } from '../../common/ExpiresUtil';
 
-import RedisLock from '../../util/RedisLock';
-
-/**
- * 平台返回值
- */
-interface PlatformTokenResult {
-    // access_token
-    accessToken: string;
-
-    // 失效时间，单位秒
-    expiresIn: number;
+export interface GetTokenResult extends BaseGetTokenResult {
+    appid: string;
+    secret: string;
 }
-
-/**
- * 保存目标
- */
-interface saveTargetSchema {
-    isCache: boolean;
-    isRedis: boolean;
-    isMysql: boolean;
-    isMongo: boolean;
-}
-let saveTargetInfo: saveTargetSchema;
-export const saveTarget = () => {
-    if (!saveTargetInfo) {
-        const { save_model = ['auto'] } = config;
-
-        const isCache =
-            save_model.includes('auto') ||
-            save_model.includes('all') ||
-            save_model.includes('cache');
-
-        const isRedis =
-            !!Redis.client &&
-            (save_model.includes('auto') ||
-                save_model.includes('all') ||
-                save_model.includes('redis'));
-
-        const isMysql =
-            !!Mysql.client &&
-            (save_model.includes('all') ||
-                save_model.includes('mysql') ||
-                (save_model.includes('auto') && !isRedis));
-
-        const isMongo =
-            !!Mongo.client &&
-            (save_model.includes('all') ||
-                save_model.includes('mongo') ||
-                (save_model.includes('auto') && !isRedis));
-
-        saveTargetInfo = {
-            isCache,
-            isRedis,
-            isMysql,
-            isMongo,
-        };
-    }
-    return saveTargetInfo;
-};
 
 /**
  * 各平台类抽象类
@@ -78,363 +28,254 @@ export const saveTarget = () => {
  * 故不能从本地缓存获取到最新的token，但老token在一定时间内依然有效；
  * 具体时间参考各平台，一般设置 <= 老token有效时间
  */
-abstract class PlatformAbstract {
-    // 平台
-    platform: PlatformEnum;
-    // 集群模式，本地缓存有效期
-    clusterCacheExpiresIn: number;
-
-    constructor(platform: PlatformEnum, clusterCacheExpiresIn: number) {
-        this.platform = platform;
-        this.clusterCacheExpiresIn = clusterCacheExpiresIn;
+abstract class PlatformAbstract extends BaseAbstract<GetTokenResult> {
+    constructor(platform: string, clusterCacheExpiresIn: number) {
+        super(platform, clusterCacheExpiresIn, 'platform');
     }
 
-    /**
-     * 获取token。
-     * 查询是否存在有效token，如果不存在，生成新token
-     *
-     * @param projectId
-     * @param appid
-     *
-     * @returns access_token
-     */
-    async get(
-        projectId: string | number,
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    check(params?: BaseParams) {}
+
+    private _format(
+        accessToken: string,
+        expiresTime: number,
         appid: string,
-        secret?: string,
-    ): Promise<string> {
-        // 查询有效token
-        let { accessToken, secret: newSecret } = await this.getValidToken(
-            projectId,
+        secret: string,
+    ) {
+        let isUpdate = !!accessToken;
+
+        if (accessToken && !isTokenExpired(expiresTime)) {
+            return {
+                accessToken,
+                appid,
+                secret,
+                isUpdate,
+            };
+        }
+
+        return {
+            accessToken: null,
             appid,
             secret,
-        );
-
-        // 获取新token
-        if (!accessToken) {
-            accessToken = await this.getNewAccessToken(
-                projectId,
-                appid,
-                newSecret,
-            );
-        }
-
-        return accessToken;
+            isUpdate,
+        };
     }
 
     /**
-     * 查询新的access_token，并将新token存入库
+     * 查询数据库中的token
      * @param projectId
-     * @param appid
-     * @param secret
-     * @param nowToken  当前token，用于跟redis中现有token判断；
-     *                  相等则redis中是失效token，强制刷新；
-     *                  否则其他线程已更新，返回redis中的最新token
-     * @returns access_token
+     * @param platform
+     * @param params
      */
-    async getNewAccessToken(
+    async getTokenFromDB(projectId: string | number, params: BaseParams) {
+        const { appid } = params;
+
+        const where: any = {
+            projectId,
+            platform: this.platform,
+        };
+
+        if (appid) {
+            where.appid = appid;
+        }
+
+        let tokenInfo;
+        if (Mysql.client) {
+            tokenInfo = await TokenPlatformMysqlModel.findOne({
+                where,
+            });
+        }
+
+        if (!tokenInfo && Mongo.client) {
+            tokenInfo = await TokenPlatformMongoModel.findOne(where);
+        }
+
+        if (!params.appid && tokenInfo.appid) {
+            params.appid = tokenInfo.appid;
+        }
+        if (!params.secret && tokenInfo.secret) {
+            params.secret = tokenInfo.secret;
+        }
+
+        return this._format(
+            tokenInfo?.accessToken,
+            tokenInfo?.expiresTime,
+            tokenInfo?.appid,
+            tokenInfo?.secret,
+        );
+    }
+
+    /**
+     * 更新数据库中的token
+     * @param projectId
+     * @param validToken
+     * @param newTokenResult
+     * @param isUpdate
+     * @param secret
+     * @returns
+     */
+    async tokenToDB(
         projectId: string | number,
         appid: string,
+        newTokenResult: NewTokenResultByIn | NewTokenResultByTime,
+        isUpdate: boolean,
         secret?: string,
-        nowToken?: string,
-    ): Promise<string> {
-        let newAccessToken;
-        const tokenCacheKey = cacheKey(projectId, this.platform, appid);
+    ) {
+        const where: any = {
+            projectId,
+            platform: this.platform,
+        };
 
-        // 集群模式获取锁，防止多进程更新
-        let redisLock;
-        const redisLockKey = 'lock_' + tokenCacheKey;
-        const redisLockValue = `${Math.random()}`;
-        if (
-            config.is_cluster == true ||
-            (config.is_cluster == 'auto' && Redis.client)
-        ) {
-            redisLock = new RedisLock(60, 70);
-            const lock = await redisLock.lock(redisLockKey, redisLockValue);
-
-            if (!lock) {
-                console.error('获取锁失败');
-                return;
-            }
-
-            // 获取到锁，从redis中查询最新token，防止重复更新
-            const redisToken = await Redis.client.get(tokenCacheKey);
-
-            // 根据当前token，判断是否强制刷新
-            if (redisToken && nowToken && redisToken !== nowToken) {
-                newAccessToken = redisToken;
-            }
+        if (appid) {
+            where.appid = appid;
         }
 
-        if (!newAccessToken) {
-            // 远程查询新token
-
-            // 查询平台secret
-            if (!secret) {
-                secret = await this.getSecret(projectId, appid, secret);
-
-                if (!secret) {
-                    throw new Error('未发现secret');
-                }
+        if (saveTarget().isMysql) {
+            if (isUpdate) {
+                await TokenPlatformMysqlModel.update(
+                    {
+                        accessToken: newTokenResult.accessToken,
+                        expiresTime: newTokenResult.expiresTime,
+                    },
+                    {
+                        where,
+                    },
+                );
+            } else {
+                await TokenPlatformMysqlModel.create({
+                    secret,
+                    ...where,
+                    accessToken: newTokenResult.accessToken,
+                    expiresTime: newTokenResult.expiresTime,
+                });
             }
-
-            // 调用子类实现方法，查询新token
-            const platformResult = await this.getAccessToken(appid, secret);
-            const newAccessTokenResult: PlatformTokenResult =
-                this.disposeResult(platformResult);
-
-            const { accessToken, expiresIn } = newAccessTokenResult;
-            newAccessToken = accessToken;
-
-            // 保存新token
-            await this.saveToDB(
-                projectId,
-                appid,
-                newAccessToken,
-                expiresIn,
-                false,
-            );
-        } else {
-            // 从redis获取到新token，只保存本地缓存
-            await this.saveToDB(
-                projectId,
-                appid,
-                newAccessToken,
-                this.clusterCacheExpiresIn,
-                true,
-            );
+        } else if (saveTarget().isMongo) {
+            if (isUpdate) {
+                await TokenPlatformMongoModel.updateOne(where, {
+                    accessToken: newTokenResult.accessToken,
+                    expiresTime: newTokenResult.expiresTime,
+                });
+            } else {
+                await TokenPlatformMongoModel.create({
+                    secret,
+                    ...where,
+                    accessToken: newTokenResult.accessToken,
+                    expiresTime: newTokenResult.expiresTime,
+                });
+            }
         }
-
-        // 释放锁
-        if (redisLock) {
-            await redisLock.unLock(redisLockKey, redisLockValue);
-        }
-
-        return newAccessToken;
     }
 
     /**
      * 查询secret
+     * 不存在有效token，获取secret；在此查询secret，减少重查数据库次数
+     *
      * @param projectId
-     * @param appid
-     * @param secret
-     * @param mysqlTokenInfo
-     * @param mongoTokenInfo
-     * @returns
+     * @param params
+     * @param getTokenResult
+     *
+     * @returns {appid, secret}
      */
-    async getSecret(
+    private async getSecret(
         projectId: string | number,
-        appid: string,
-        secret?: string,
-        mysqlTokenInfo?: any,
-        mongoTokenInfo?: any,
+        params: BaseParams,
+        getTokenResult: GetTokenResult,
     ) {
-        // 1 - 从参数取
-        if (secret) {
-            return secret;
+        let result = {
+            appid: params.appid,
+            secret: params.secret,
+        };
+
+        // 1.1 - 从参数取
+        if (result.secret && result.appid) {
+            return result;
+        }
+
+        // 1.2 - 从已查询中取
+        if (getTokenResult) {
+            result = {
+                appid: result.appid || getTokenResult.appid,
+                secret: result.secret || getTokenResult.secret,
+            };
+
+            if (result.secret && result.appid) {
+                return result;
+            }
+        }
+
+        const where: any = {
+            projectId,
+            platform: this.platform,
+        };
+
+        if (params.appid) {
+            where.appid = params.appid;
         }
 
         // 2.1 - 从mysql中取
-        if (!secret) {
-            if (!mysqlTokenInfo && Mysql.client) {
-                mysqlTokenInfo = await TokenMysqlModel.findOne({
-                    where: {
-                        projectId,
-                        platform: this.platform,
-                        appid: appid,
-                    },
-                });
-            }
+        if (Mysql.client) {
+            const mysqlTokenInfo = await TokenPlatformMysqlModel.findOne({
+                where,
+            });
 
-            secret = mysqlTokenInfo ? mysqlTokenInfo.get('secret') : secret;
+            if (mysqlTokenInfo) {
+                return {
+                    appid: mysqlTokenInfo.appid,
+                    secret: mysqlTokenInfo.secret,
+                };
+            }
         }
 
         // 2.2 - 从mongo中取
-        if (!secret) {
-            if (!mongoTokenInfo && Mongo.client) {
-                mongoTokenInfo = await TokenMongoModel.findOne({
-                    projectId,
-                    platform: this.platform,
-                    appid,
-                });
+        if (Mongo.client) {
+            const mongoTokenInfo = await TokenPlatformMongoModel.findOne(where);
+
+            if (mongoTokenInfo) {
+                return {
+                    appid: mongoTokenInfo.appid,
+                    secret: mongoTokenInfo.secret,
+                };
             }
-            secret = mongoTokenInfo ? mongoTokenInfo.secret : secret;
         }
 
         // 3 - 在没配置mysql、mongo时，从缓存中取
-        if (!secret && saveTarget().isCache) {
-            const tokenCacheKey = cacheKey(projectId, this.platform, appid);
-            const cacheInfo = MemoryCache.getCacheInfo(tokenCacheKey);
-            secret = (cacheInfo || {}).secret;
-        }
-
-        return secret;
-    }
-
-    /**
-     * 查询库中有效token
-     * 查询顺序：1-本地缓存 2-redis 3-mysql、mongo
-     * token不存在，获取secret，用于查询新token
-     *
-     * @param projectId
-     * @param appid
-     * @param secret
-     *
-     * @returns {access_token, secret}
-     */
-    private async getValidToken(
-        projectId: string | number,
-        appid: string,
-        secret?: string,
-    ) {
-        let accessToken: string;
-
-        const tokenCacheKey = cacheKey(projectId, this.platform, appid);
-
-        // 1 - 如果启用缓存，先从本地缓存中取
         if (saveTarget().isCache) {
-            accessToken = await MemoryCache.get(tokenCacheKey);
-        }
-
-        // 2 - 从redis中取
-        if (!accessToken && Redis.client) {
-            accessToken = await Redis.client.get(tokenCacheKey);
-        }
-
-        // 3.1 - 从mysql取
-        let mysqlTokenInfo;
-        if (!accessToken && Mysql.client) {
-            mysqlTokenInfo = await TokenMysqlModel.findOne({
-                where: {
-                    projectId,
-                    platform: this.platform,
-                    appid: appid,
-                },
-            });
-
-            // 取未过期的token
-            if (
-                mysqlTokenInfo &&
-                mysqlTokenInfo.get('expireTime') < Date.now()
-            ) {
-                accessToken = mysqlTokenInfo.get('token');
-            }
-        }
-
-        // 3.2 - 从mongo取
-        let mongoTokenInfo;
-        if (!accessToken && Mongo.client) {
-            const mongoTokenInfo = await TokenMongoModel.findOne({
+            const tokenCacheKey = cacheKey(
                 projectId,
-                platform: this.platform,
-                appid,
-            });
-
-            // 取未过期的token
-            if (mongoTokenInfo && mongoTokenInfo.expireTime < Date.now()) {
-                accessToken = mongoTokenInfo.token;
-            }
-        }
-
-        // 不存在有效token，获取secret，用于查询新token
-        // 在此查询secret，减少重查数据库次数
-        if (!accessToken) {
-            secret = await this.getSecret(
-                projectId,
-                appid,
-                secret,
-                mysqlTokenInfo,
-                mongoTokenInfo,
+                this.platform,
+                result.appid,
             );
+            const cacheInfo = MemoryCache.getCacheInfo(tokenCacheKey) || {};
+            return {
+                appid: cacheInfo.appid,
+                secret: cacheInfo.secret,
+            };
         }
 
-        return { accessToken, secret };
+        throw new Error('无法获取appid或secret');
     }
 
     /**
-     * 保存token
+     * 调用子类实现方法，获取access_token
      * @param projectId
-     * @param appid
-     * @param accessToken
-     * @param expiresIn
-     * @param onlyCache 只保存到本地缓存。集群模式下，其他进程获取最新token，保存到库；当前进程直接只需更新本地缓存
+     * @param params
+     * @param getTokenResult
+     * @returns
      */
-    private async saveToDB(
+    async getAccessTokenInSub(
         projectId: string | number,
-        appid: string,
-        accessToken: string,
-        expiresIn: number,
-        onlyCache: boolean,
+        params: BaseParams,
+        getTokenResult: GetTokenResult,
     ) {
-        // 失效时间，单位秒
-        const expiresTTL = expiresIn - config.premature_failure;
-        const expiresTime = Date.now() + expiresTTL;
-        const clusterCacheExpiresTime = Date.now() + this.clusterCacheExpiresIn;
+        const secretInfo = await this.getSecret(
+            projectId,
+            params,
+            getTokenResult,
+        );
 
-        const tokenCacheKey = cacheKey(projectId, this.platform, appid);
-
-        // token保存到本地缓存
-        if (saveTarget().isCache) {
-            MemoryCache.set(
-                tokenCacheKey,
-                accessToken,
-                config.is_cluster ? clusterCacheExpiresTime : expiresTime,
-            );
-        }
-
-        // token保存redis
-        if (!onlyCache && saveTarget().isRedis) {
-            const syncRedis = await Redis.client.set(
-                tokenCacheKey,
-                accessToken,
-                {
-                    EX: expiresTTL,
-                },
-            );
-
-            // 集群模式，通知保存到redis。供别的进程获取最新token
-            if (config.is_cluster) {
-                await syncRedis;
-            }
-        }
-
-        // token保存mysql
-        if (!onlyCache && saveTarget().isMysql) {
-            TokenMysqlModel.update(
-                {
-                    accessToken,
-                    expireTime: expiresTime,
-                },
-                {
-                    where: {
-                        projectId,
-                        platform: this.platform,
-                        appid: appid,
-                    },
-                },
-            );
-        }
-
-        // token保存mongo
-        if (!onlyCache && saveTarget().isMongo) {
-            TokenMongoModel.updateOne(
-                {
-                    projectId,
-                    platform: this.platform,
-                    appid: appid,
-                },
-                {
-                    accessToken,
-                    expireTime: expiresTime,
-                },
-            );
-        }
+        return await this.getAccessToken(secretInfo.appid, secretInfo.secret);
     }
 
-    /**
-     * 根据appid查询key
-     * 查询顺序：1-参数 2-本地缓存 3-mysql、mongo
-     *
     /**
      * 子类方法：通过接口获取access_token方法
      *
@@ -445,13 +286,6 @@ abstract class PlatformAbstract {
         appid: string,
         secret: string,
     ): Promise<AxiosResponse>;
-
-    /**
-     * 子类方法：处理平台的返回值
-     * @param result
-     * @returns 返回的token
-     */
-    abstract disposeResult(result: AxiosResponse): PlatformTokenResult;
 }
 
 export default PlatformAbstract;

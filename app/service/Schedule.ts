@@ -1,39 +1,36 @@
-import { RecurrenceRule, scheduleJob } from 'node-schedule';
+import { scheduleJob } from 'node-schedule';
 
 import config from '../../config/config';
-import TokenMysqlModel from '../model/TokenMysqlModel';
-import TokenMongoModel from '../model/TokenMongoModel';
+import TokenUserMongoModel from '../model/TokenUserMongoModel';
+import TokenUserMysqlModel from '../model/TokenUserMysqlModel';
 import MemoryCache from '../../config/db/MemoryCache';
-import { client as mysqlClient } from '../../config/db/Mysql';
-import { client as mongoClient } from '../../config/db/Mongo';
-import { saveTarget } from './base/PlatformAbstract';
+import mysqlClient from '../../config/db/Mysql';
+import mongoClient from '../../config/db/Mongo';
+import { saveTarget } from './base/BaseAbstract';
 import Service from './Service';
+import { isTokenExpired, getNow } from '../common/ExpiresUtil';
 
-const { corn_interval } = config;
+const { refresh_token_schedule, refresh_token_premature_failure } = config;
 
 /**
- * 定时任务，刷新过期token
+ * 定时任务，刷新过期refresh token
  */
 class Schedule {
     async run() {
         // 是否启动定时任务。未设置轮询时间、未连接数据库，不启动
         const isStart =
-            corn_interval &&
-            Number.isInteger(corn_interval) &&
-            corn_interval > 0 &&
+            refresh_token_schedule &&
+            Number.isInteger(refresh_token_schedule) &&
+            refresh_token_schedule &&
             (saveTarget().isCache ||
                 saveTarget().isRedis ||
                 saveTarget().isMysql ||
                 saveTarget().isMongo);
 
         if (isStart) {
-            console.log('run');
-            const rule = new RecurrenceRule();
-            rule.second = corn_interval;
-
             await this.jobRefreshExpireToken();
 
-            const job = scheduleJob(rule, async () => {
+            const job = scheduleJob(refresh_token_schedule, async () => {
                 try {
                     await this.jobRefreshExpireToken();
                 } catch (e) {
@@ -71,27 +68,25 @@ class Schedule {
     private async jobRefreshExpireToken() {
         const expireTokens: Array<any> = [];
 
-        // 缓存过期token
-        const cache = MemoryCache.cache.values();
-        this.aggregation(expireTokens, Array.from(cache));
+        // 缓存中过期的token
+        const cache = Array.from(MemoryCache.cache.values()).filter((item) => {
+            return isTokenExpired(
+                item.refreshExpiresTime - refresh_token_premature_failure,
+            );
+        });
+        this.aggregation(expireTokens, cache);
 
         const dbQueryFunctions = [];
+        const refreshExpiresTime = getNow() - refresh_token_premature_failure;
 
         // mysql过期token
         if (mysqlClient) {
             dbQueryFunctions.push(
-                TokenMysqlModel.findAll({
+                TokenUserMysqlModel.findAll({
                     where: {
-                        $or: [
-                            {
-                                expireTime: {
-                                    $lte: Date.now(),
-                                },
-                            },
-                            {
-                                expireTime: null,
-                            },
-                        ],
+                        refreshExpiresTime: {
+                            $lte: refreshExpiresTime,
+                        },
                     },
                 }),
             );
@@ -100,18 +95,11 @@ class Schedule {
         // mongo过期token
         if (mongoClient) {
             dbQueryFunctions.push(
-                TokenMongoModel.find({
+                TokenUserMongoModel.find({
                     where: {
-                        $or: [
-                            {
-                                expireTime: {
-                                    $lte: Date.now(),
-                                },
-                            },
-                            {
-                                expireTime: null,
-                            },
-                        ],
+                        refreshExpiresTime: {
+                            $lte: refreshExpiresTime,
+                        },
                     },
                 }),
             );
@@ -126,12 +114,16 @@ class Schedule {
             this.aggregation(expireTokens, mongoTokens);
         }
 
-        // 异步生成新token
-        expireTokens.forEach((expireToken) => {
-            const { projectId, platform, appid, secret } = expireToken;
+        // 成新token
+        expireTokens.forEach(async (expireToken) => {
+            const { projectId, platform, userId, refreshToken } = expireToken;
             const platformService = Service.getPlatformService(platform);
 
-            platformService.getNewAccessToken(projectId, appid, secret);
+            platformService.getNewAccessToken(
+                projectId,
+                { userId },
+                { refreshToken, isUpdate: true },
+            );
         });
     }
 }
